@@ -107,6 +107,16 @@ type Options struct {
 	// and moves optional sources behind connect_tool_source. "delivery" keeps the
 	// full surface and adds a stable completion-and-verification contract.
 	TokenMode string
+	// EnabledTools, when non-nil, overrides cfg.Tools.Enabled (normally
+	// resolved from reasonix.toml/~/.reasonix/config.toml) as the built-in
+	// tool allow-list — for an embedder that needs to restrict the tool
+	// surface itself regardless of whatever config file is present (e.g. a
+	// deployment with no real process exec at all, which must exclude
+	// "bash"/"bash_output"/"kill_shell"/"wait_job" unconditionally). A nil
+	// slice (the zero value) preserves existing config-file-driven
+	// behavior exactly as before this field existed; pass an explicit
+	// non-nil slice (even one naming all built-ins) to take control of it.
+	EnabledTools []string
 	// SessionDir overrides where persisted chat transcripts are written. When
 	// empty, the shared CLI/global session directory is used.
 	SessionDir string
@@ -367,6 +377,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	searchSpec := builtin.ResolveSearch(cfg.Tools.Search.Engine, cfg.Tools.Search.RgPath, stderr)
 	bashTimeout := time.Duration(cfg.BashTimeoutSeconds()) * time.Second
 	enabledBuiltins := cfg.Tools.Enabled
+	if opts.EnabledTools != nil {
+		enabledBuiltins = opts.EnabledTools
+	}
 	if tokenEconomy {
 		enabledBuiltins = tokenEconomyBuiltins(enabledBuiltins)
 	}
