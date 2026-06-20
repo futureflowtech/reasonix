@@ -138,7 +138,7 @@ func buildReviewSubagentRegistry(reviewSk skill.Skill, cfg *config.Config, root 
 	}
 	searchSpec := builtin.ResolveSearch(cfg.Tools.Search.Engine, cfg.Tools.Search.RgPath, os.Stderr)
 	confined := append(builtin.ConfineReaders(forbidReadRoots),
-		builtin.ConfineBash(bashSpec, guard),
+		builtin.ConfineBash(bashSpec, guard, nil),
 		builtin.ConfineSearch(searchSpec, bashSpec, forbidReadRoots))
 	for _, tl := range confined {
 		if _, ok := parentReg.Get(tl.Name()); ok {

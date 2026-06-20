@@ -25,7 +25,7 @@ func TestBindWritePathsRebindsBashWriteRoots(t *testing.T) {
 	reg.Add(builtin.ConfineBash(sandbox.Spec{
 		Mode:       "enforce",
 		WriteRoots: []string{root},
-	}, builtin.SessionDataGuard{}))
+	}, builtin.SessionDataGuard{}, nil))
 	reg.Add(foregroundOnlyBash{inner: mustGet(t, reg, "bash")})
 
 	bound, removed := BindWritePaths(reg, claim, root, true)

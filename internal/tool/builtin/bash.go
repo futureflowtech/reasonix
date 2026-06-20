@@ -92,6 +92,9 @@ type bash struct {
 	// and never for background jobs, which need the local job manager.
 	terminal    TerminalRunner
 	sessionTemp *sessiontemp.Manager
+	// remote, when non-nil, takes over Execute entirely — see
+	// sandbox.RemoteExecutor's own doc comment and executeRemote below.
+	remote sandbox.RemoteExecutor
 }
 
 type bashParams struct {
@@ -185,6 +188,10 @@ func (b bash) ExecuteDetailed(ctx context.Context, args json.RawMessage) (tool.D
 	}
 	if err := validateBashParams(p); err != nil {
 		return bashPreflightFailure(ex, start, err)
+	}
+
+	if b.remote != nil {
+		return b.executeRemote(ctx, p, ex, start)
 	}
 
 	sh := b.resolved()
@@ -421,6 +428,71 @@ func applyEnvOverrides(env, overrides []string) []string {
 		env = setEnvValue(env, key, value)
 	}
 	return env
+}
+
+// executeRemote runs p.Command through b.remote instead of local exec — the
+// whole point of a RemoteExecutor (a real, separate kernel, e.g. a Kata
+// Containers VM) is that none of the local machinery below applies: no OS
+// sandbox wrapping (the VM boundary is the isolation), no host-terminal
+// echo (there is no host terminal to echo to), no background-job support
+// (jobs.Manager tracks local process groups, which don't exist here — a
+// caller that needs long-running background work in a remote sandbox needs
+// a different mechanism, not this one; refusing clearly beats silently
+// running foreground-only and calling it done).
+func (b bash) executeRemote(ctx context.Context, p bashParams, ex *tool.ShellExecution, start time.Time) (tool.DetailedResult, error) {
+	if p.RunInBackground {
+		ex.State = tool.ShellStateNotRun
+		ex.FailurePhase = tool.ShellPhasePreflight
+		ex.MutationRisk = tool.ShellMutationNotStarted
+		ex.DurationMs = time.Since(start).Milliseconds()
+		return tool.DetailedResult{Execution: ex}, fmt.Errorf("run_in_background is not supported when bash is routed to a remote sandbox")
+	}
+	sh := b.resolved()
+	argv := unconfinedShellArgv(sh, p.Command)
+	stdout, stderr, exitCode, err := b.remote.Exec(ctx, argv[0], argv[1:], b.workDir)
+	out := stdout
+	if stderr != "" {
+		if out != "" {
+			out += "\n"
+		}
+		out += stderr
+	}
+	switch {
+	case err != nil:
+		ex.State = tool.ShellStateFailed
+		ex.FailurePhase = tool.ShellPhaseExecution
+		ex.MutationRisk = tool.ShellMutationMayBePartial
+		ex.OutputTail = boundedOutputTail(out)
+	case exitCode != 0:
+		ex.State = tool.ShellStateFailed
+		ex.FailurePhase = tool.ShellPhaseExecution
+		ex.ExitCode = &exitCode
+		ex.MutationRisk = tool.ShellMutationMayBePartial
+		ex.OutputTail = boundedOutputTail(out)
+	default:
+		ex.State = tool.ShellStateCompleted
+		ex.ExitCode = &exitCode
+		ex.MutationRisk = tool.ShellMutationMayHaveCompleted
+	}
+	ex.DurationMs = time.Since(start).Milliseconds()
+	res := tool.DetailedResult{Output: appendSessionDataHint(out, b.guard.CommandHint(b.workDir, p.Command)), Execution: ex}
+	switch {
+	case err != nil:
+		return res, fmt.Errorf("remote sandbox exec: %w", err)
+	case exitCode != 0:
+		return res, fmt.Errorf("command exited with code %d", exitCode)
+	}
+	return res, nil
+}
+
+// boundedOutputTail keeps the last OutputTailMaxBytes of a remote run's output,
+// matching what shellrun retains for a local run. Invalid runes from a cut
+// mid-sequence are dropped so the tail stays JSON-encodable.
+func boundedOutputTail(out string) string {
+	if len(out) > tool.OutputTailMaxBytes {
+		out = out[len(out)-tool.OutputTailMaxBytes:]
+	}
+	return strings.ToValidUTF8(out, "")
 }
 
 // appendSessionDataHint appends the session-data guard warning to command

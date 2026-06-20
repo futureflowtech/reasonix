@@ -2159,6 +2159,21 @@ func (e *ProviderEntry) ResolveAPIKeyFromProcessEnvForProbe() {
 	e.resolvedSource = CredentialSource{Kind: CredentialSourceEnvironment, Label: "setup prompt"}
 }
 
+// SetAPIKeyOverride pins key onto this entry directly, bypassing every local
+// credential source (env var, project .env, global .env, keyring) — for an
+// embedder that already resolved its own credential (e.g. from its own
+// config's env:NAME indirection) and wants this entry's APIKey() calls to
+// return it without writing anything to disk or touching the process
+// environment. A zero-value key is a no-op — this method only ever pins a
+// non-empty override, it never clears a key that was already resolved.
+func (e *ProviderEntry) SetAPIKeyOverride(key string) {
+	if e == nil || key == "" {
+		return
+	}
+	e.resolvedAPIKey = key
+	e.resolvedSource = CredentialSource{Kind: CredentialSourceEnvironment, Label: "embedder override"}
+}
+
 func (e *ProviderEntry) APIKeySourceLabel() string {
 	if e == nil || strings.TrimSpace(e.APIKeyEnv) == "" {
 		return ""

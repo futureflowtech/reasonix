@@ -339,7 +339,7 @@ func TestSessionDataGuardCommandHintRelativeFromStateRoot(t *testing.T) {
 func TestBashAppendsSessionDataHint(t *testing.T) {
 	root, cliSession, _ := stateRootFor(t)
 	guard := NewSessionDataGuard(root, nil)
-	b := ConfineBash(sandbox.Spec{Mode: "off"}, guard)
+	b := ConfineBash(sandbox.Spec{Mode: "off"}, guard, nil)
 
 	args, _ := json.Marshal(map[string]string{"command": "echo " + cliSession})
 	out, err := b.Execute(context.Background(), args)
