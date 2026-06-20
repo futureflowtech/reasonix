@@ -12,7 +12,7 @@ import (
 
 func TestLegacyShellAliasesPassArgumentGateWithoutDescription(t *testing.T) {
 	r := tool.NewRegistry()
-	r.Add(builtin.ConfineBash(sandbox.Spec{Mode: "enforce", Shell: sandbox.Shell{Kind: sandbox.ShellPowerShell, Path: "pwsh"}}, builtin.SessionDataGuard{}))
+	r.Add(builtin.ConfineBash(sandbox.Spec{Mode: "enforce", Shell: sandbox.Shell{Kind: sandbox.ShellPowerShell, Path: "pwsh"}}, builtin.SessionDataGuard{}, nil))
 	for _, name := range []string{"bash", "Bash", "PowerShell", "powershell", "Pwsh", "pwsh"} {
 		t.Run(name, func(t *testing.T) {
 			target, _, _ := r.ResolveCall(name)
