@@ -25,7 +25,7 @@ func TestBindWritePathsRebindsShellWriteRoots(t *testing.T) {
 	shell := builtin.ConfineBash(sandbox.Spec{
 		Mode:       "enforce",
 		WriteRoots: []string{root},
-	}, builtin.SessionDataGuard{})
+	}, builtin.SessionDataGuard{}, nil)
 	reg.Add(shell)
 	reg.Add(foregroundOnlyBash{inner: mustGet(t, reg, shell.Name())})
 
