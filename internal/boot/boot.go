@@ -150,6 +150,16 @@ type Options struct {
 	// values use standard execution; unknown values keep the standard default.
 	AgentPreset string
 	TokenMode   string
+	// EnabledTools, when non-nil, overrides cfg.Tools.Enabled (normally
+	// resolved from reasonix.toml/~/.reasonix/config.toml) as the built-in
+	// tool allow-list — for an embedder that needs to restrict the tool
+	// surface itself regardless of whatever config file is present (e.g. a
+	// deployment with no real process exec at all, which must exclude
+	// "bash"/"bash_output"/"kill_shell"/"wait_job" unconditionally). A nil
+	// slice (the zero value) preserves existing config-file-driven
+	// behavior exactly as before this field existed; pass an explicit
+	// non-nil slice (even one naming all built-ins) to take control of it.
+	EnabledTools []string
 	// SessionDir overrides where persisted chat transcripts are written. When
 	// empty, the shared CLI/global session directory is used.
 	SessionDir string
@@ -160,6 +170,23 @@ type Options struct {
 	SessionRuntime       *session.Runtime
 	SessionHostID        string
 	SessionCreateOptions session.CreateOptions
+	// Config, when non-nil, is used as-is instead of reading
+	// ./reasonix.toml / ~/.reasonix/config.toml from disk (config.LoadForRoot
+	// is skipped entirely, along with legacy-config migration). WorkspaceRoot
+	// above is still used for skills/hooks/memory/session file resolution —
+	// this field only replaces where the Config value itself comes from. The
+	// caller owns building a complete config (start from config.Default() and
+	// layer overrides on top, the same shape LoadForRoot produces) since some
+	// bookkeeping LoadForRoot performs (dotenv-derived expansion env, legacy
+	// migration, credential-store-mode detection) has no equivalent here.
+	Config *config.Config
+	// APIKeyOverride, when non-empty, pins the resolved model's API key to
+	// this value via ProviderEntry.SetAPIKeyOverride, bypassing every local
+	// credential source (env var, project/global .env, keyring) for this run
+	// only — no value is written to disk or to the process environment. For
+	// an embedder that already resolved its own credential (e.g. via its own
+	// config's env:NAME indirection) and wants to hand it through in memory.
+	APIKeyOverride string
 	// SharedHost is an optional plugin.Host shared across controllers for the
 	// same workspace root. When set, boot.Build reuses its running clients
 	// instead of creating new subprocesses, and the caller manages the host's
@@ -231,6 +258,12 @@ type Options struct {
 	// deferPublish keeps a replacement generation private until migration and
 	// commit succeed. Cold BuildRuntime leaves this false and publishes at boot.
 	deferPublish bool
+	// RemoteExecutor, when non-nil, routes the bash tool through it entirely
+	// instead of local exec — e.g. a Kata Containers pod for a cloud/
+	// multi-tenant run. See sandbox.RemoteExecutor's own doc comment. Nil
+	// (the default) preserves normal local-exec/OS-sandbox behavior,
+	// unaffected by this field's existence.
+	RemoteExecutor sandbox.RemoteExecutor
 }
 
 func recoveryHeadlessMode(opts Options) bool {
@@ -253,16 +286,41 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Import v1/v0.5 config before Load so this boot sees the new config + ~/.env.
-	// CLI Run also calls this before config-only commands; keep a shared fallback.
-	migrated, migErr := config.MigrateLegacyIfNeededForRoot(root)
-	deepSeekProtocolMigrated, deepSeekProtocolMigErr := config.ApplyUserConfigUpgradesOnStartup(config.UserConfigPath())
-	stepLimitsMigrated, stepLimitMigErr := config.MigrateLegacyAgentStepLimitsForRoot(root)
-	redactToolOutputMigrated, redactToolOutputMigErr := config.MigrateLegacyRedactToolOutputForRoot(root)
-	memoryCompilerMigrated, memoryCompilerMigErr := config.MigrateLegacyMemoryCompilerForRoot(root)
-	multiThresholdMigrated, multiThresholdMigErr := config.MigrateLegacyMultiThresholdCompactionForRoot(root)
-	config.MigrateLegacyMCPTiersForRoot(root)
-	cfg, opts, err := resolveBuildSelection(root, opts)
+	var (
+		cfg                      *config.Config
+		migrated                 *config.MigrationResult
+		migErr                   error
+		deepSeekProtocolMigrated bool
+		deepSeekProtocolMigErr   error
+		stepLimitsMigrated       bool
+		stepLimitMigErr          error
+		redactToolOutputMigrated bool
+		redactToolOutputMigErr   error
+		memoryCompilerMigrated   bool
+		memoryCompilerMigErr     error
+		multiThresholdMigrated   bool
+		multiThresholdMigErr     error
+	)
+	if opts.Config != nil {
+		// Caller supplied a fully-built config — skip disk entirely, including
+		// legacy-config migration (nothing on disk to migrate into memory).
+		cfg = opts.Config
+	} else {
+		// Import v1/v0.5 config before Load so this boot sees the new config + ~/.env.
+		// CLI Run also calls this before config-only commands; keep a shared fallback.
+		migrated, migErr = config.MigrateLegacyIfNeededForRoot(root)
+		deepSeekProtocolMigrated, deepSeekProtocolMigErr = config.ApplyUserConfigUpgradesOnStartup(config.UserConfigPath())
+		stepLimitsMigrated, stepLimitMigErr = config.MigrateLegacyAgentStepLimitsForRoot(root)
+		redactToolOutputMigrated, redactToolOutputMigErr = config.MigrateLegacyRedactToolOutputForRoot(root)
+		memoryCompilerMigrated, memoryCompilerMigErr = config.MigrateLegacyMemoryCompilerForRoot(root)
+		multiThresholdMigrated, multiThresholdMigErr = config.MigrateLegacyMultiThresholdCompactionForRoot(root)
+		config.MigrateLegacyMCPTiersForRoot(root)
+	}
+	// Model selection and reasoning preflight run on BOTH paths: a caller-owned
+	// config still needs its model refs expanded and reasoning roles resolved,
+	// and opts is rebound with the resolved selection. LoadForRoot previously
+	// fed this; opts.Config now supplies the same shape directly.
+	cfg, opts, err = resolveBuildSelection(root, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -468,6 +526,9 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	entry, modelRef, err := resolveModelEntry(entryResolver, cfg, modelName)
 	if err != nil {
 		return nil, err
+	}
+	if opts.APIKeyOverride != "" {
+		entry.SetAPIKeyOverride(opts.APIKeyOverride)
 	}
 	if opts.EffortOverride != nil {
 		entry.Effort = *opts.EffortOverride
@@ -749,11 +810,14 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	searchSpec := builtin.ResolveSearch(cfg.Tools.Search.Engine, cfg.Tools.Search.RgPath, stderr)
 	bashTimeout := time.Duration(cfg.BashTimeoutSeconds()) * time.Second
 	enabledBuiltins := cfg.Tools.Enabled
+	if opts.EnabledTools != nil {
+		enabledBuiltins = opts.EnabledTools
+	}
 	readPathResolver := builtin.NewPathResolver()
 	sessionTemp, persistentShell := sessionManagers(opts)
 	// Register the full built-in inventory for use_capability dispatch. The
 	// provider-visible surface is narrowed later via SetProviderVisibleTools.
-	addBuiltins(reg, enabledBuiltins, writeRoots, writeRootSet, bashSpec, bashTimeout, searchSpec, stderr, root, proxySpec, forbidReadRoots, readPathResolver, sessionGuard, managedConfig, opts.FileOverlay, opts.TerminalRunner, sessionTemp, fileWriteReceipt)
+	addBuiltins(reg, enabledBuiltins, writeRoots, writeRootSet, bashSpec, bashTimeout, searchSpec, stderr, root, proxySpec, forbidReadRoots, readPathResolver, sessionGuard, managedConfig, opts.FileOverlay, opts.TerminalRunner, sessionTemp, fileWriteReceipt, opts.RemoteExecutor)
 	bindPersistentShell(reg, persistentShell)
 	addWebSearch(reg, cfg, entry, proxySpec, sink)
 	browserExec, closeBrowser := browserBackend(opts.BrowserExecutor, cfg.Browser, writeRoots)
@@ -2525,12 +2589,12 @@ func subagentEffectiveIdentity(cfg *config.Config, resolver provider.Resolver, b
 // and makes bash warn when a command references them. managedConfig names the
 // Reasonix-owned config files writable outside writeRoots after a fresh
 // per-write human approval.
-func addBuiltins(reg *tool.Registry, enabled, writeRoots []string, writeRootSet *sandbox.WritableRootSet, bashSpec sandbox.Spec, bashTimeout time.Duration, searchSpec builtin.SearchSpec, stderr io.Writer, workDir string, proxySpec netclient.ProxySpec, forbidReadRoots []string, readPathResolver *builtin.PathResolver, sessionGuard builtin.SessionDataGuard, managedConfig builtin.ManagedConfigPaths, overlay builtin.FileOverlay, terminal builtin.TerminalRunner, sessionTemp *sessiontemp.Manager, fileWriteReceipt func(path string, hadPrior bool, prior []byte)) {
+func addBuiltins(reg *tool.Registry, enabled, writeRoots []string, writeRootSet *sandbox.WritableRootSet, bashSpec sandbox.Spec, bashTimeout time.Duration, searchSpec builtin.SearchSpec, stderr io.Writer, workDir string, proxySpec netclient.ProxySpec, forbidReadRoots []string, readPathResolver *builtin.PathResolver, sessionGuard builtin.SessionDataGuard, managedConfig builtin.ManagedConfigPaths, overlay builtin.FileOverlay, terminal builtin.TerminalRunner, sessionTemp *sessiontemp.Manager, fileWriteReceipt func(path string, hadPrior bool, prior []byte), remote sandbox.RemoteExecutor) {
 	// If a workspace directory is set, use workspace-bound tools that resolve
 	// paths relative to that directory. Otherwise fall back to the process-cwd
 	// compile-time builtins.
 	if workDir != "" {
-		ws := builtin.Workspace{Dir: workDir, WriteRoots: writeRoots, WriteRootSet: writeRootSet, ForbidReadRoots: forbidReadRoots, Bash: bashSpec, BashTimeout: bashTimeout, Search: searchSpec, ProxySpec: proxySpec, ReadPaths: readPathResolver, SessionGuard: sessionGuard, ManagedConfig: managedConfig, FileOverlay: overlay, Terminal: terminal, SessionTemp: sessionTemp, FileWriteReceipt: fileWriteReceipt}
+		ws := builtin.Workspace{Dir: workDir, WriteRoots: writeRoots, WriteRootSet: writeRootSet, ForbidReadRoots: forbidReadRoots, Bash: bashSpec, BashTimeout: bashTimeout, Search: searchSpec, ProxySpec: proxySpec, ReadPaths: readPathResolver, SessionGuard: sessionGuard, ManagedConfig: managedConfig, FileOverlay: overlay, Terminal: terminal, SessionTemp: sessionTemp, FileWriteReceipt: fileWriteReceipt, Remote: remote}
 		for _, t := range ws.Tools(enabled...) {
 			reg.Add(t)
 		}
@@ -2554,7 +2618,7 @@ func addBuiltins(reg *tool.Registry, enabled, writeRoots []string, writeRootSet 
 	// Replace unconfined defaults with confined instances, preserving registry order: file-writers bound to the workspace, read tools
 	// bound to forbid-read roots, bash to the OS sandbox, web_fetch to the proxy.
 	// Only replace tools actually enabled/present.
-	bashTool := builtin.ConfineBash(bashSpec, sessionGuard, bashTimeout)
+	bashTool := builtin.ConfineBash(bashSpec, sessionGuard, remote, bashTimeout)
 	if rebound, ok := builtin.BindSessionTemp(bashTool, sessionTemp); ok {
 		bashTool = rebound
 	}

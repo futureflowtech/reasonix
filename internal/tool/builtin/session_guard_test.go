@@ -340,7 +340,7 @@ func TestBashAppendsSessionDataHint(t *testing.T) {
 	requirePOSIXShellTest(t)
 	root, cliSession, _ := stateRootFor(t)
 	guard := NewSessionDataGuard(root, nil)
-	b := ConfineBash(sandbox.Spec{Mode: "off"}, guard)
+	b := ConfineBash(sandbox.Spec{Mode: "off"}, guard, nil)
 
 	args, _ := json.Marshal(map[string]string{"command": "echo " + cliSession})
 	out, err := b.Execute(fullAccessBashTestContext(t.Context()), args)

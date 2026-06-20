@@ -58,6 +58,10 @@ type Workspace struct {
 	// write_file mutation. It is instance-scoped so concurrent runtimes never
 	// record into another session's recovery ledger.
 	FileWriteReceipt func(path string, hadPrior bool, prior []byte)
+	// Remote, when non-nil, routes bash entirely through it instead of local
+	// exec — see sandbox.RemoteExecutor's own doc comment. Nil (the default)
+	// preserves normal local-exec/OS-sandbox behavior.
+	Remote sandbox.RemoteExecutor
 }
 
 // Tools returns the built-in tools bound to the workspace, ready to Add to a
@@ -77,7 +81,7 @@ func (w Workspace) Tools(enabled ...string) []tool.Tool {
 	if shell.Path == "" {
 		shell = sandbox.ResolveShell("", "", nil)
 	}
-	shellTool := bash{workDir: w.Dir, sb: w.Bash, shell: shell, timeout: w.BashTimeout, guard: w.SessionGuard, terminal: w.Terminal, sessionTemp: w.SessionTemp}
+	shellTool := bash{workDir: w.Dir, sb: w.Bash, shell: shell, timeout: w.BashTimeout, guard: w.SessionGuard, terminal: w.Terminal, sessionTemp: w.SessionTemp, remote: w.Remote}
 	if shell.Kind == sandbox.ShellPowerShell {
 		shellTool.name = "pwsh"
 	}

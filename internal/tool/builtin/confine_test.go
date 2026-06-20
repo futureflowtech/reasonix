@@ -22,7 +22,7 @@ func TestPowerShellToolUsesPwshIdentityAndConfinedLegacyAlias(t *testing.T) {
 		Mode:  "enforce",
 		Shell: sandbox.Shell{Kind: sandbox.ShellPowerShell, Path: "pwsh"},
 	}
-	primary := ConfineBash(spec, SessionDataGuard{})
+	primary := ConfineBash(spec, SessionDataGuard{}, nil)
 	if primary.Name() != "pwsh" {
 		t.Fatalf("primary name = %q", primary.Name())
 	}
@@ -62,7 +62,7 @@ func TestGitBashToolBindingPreservesBashDialectAndStableSchema(t *testing.T) {
 		Mode:  "off",
 		Shell: sandbox.Shell{Kind: sandbox.ShellBash, Path: `C:\Program Files\Git\bin\bash.exe`},
 	}}
-	baseline := ConfineBash(workspace.Bash, SessionDataGuard{})
+	baseline := ConfineBash(workspace.Bash, SessionDataGuard{}, nil)
 	for _, configured := range []string{"bash", "Bash", "PowerShell", "powershell", "pwsh"} {
 		tools := workspace.Tools(configured)
 		if len(tools) != 1 || tools[0].Name() != "bash" {
@@ -121,7 +121,7 @@ func TestRebindBashWriteRootsUsesMinimalWriteSurface(t *testing.T) {
 	tool, ok := RebindBashWriteRoots(ConfineBash(sandbox.Spec{
 		Mode:       "enforce",
 		WriteRoots: []string{root},
-	}, SessionDataGuard{}), []string{claim})
+	}, SessionDataGuard{}, nil), []string{claim})
 	if !ok {
 		t.Fatal("expected confined bash to be rebound")
 	}
@@ -150,7 +150,7 @@ func TestReboundBashCannotWriteOutsideClaim(t *testing.T) {
 	rebound, ok := RebindBashWriteRoots(ConfineBash(sandbox.Spec{
 		Mode:       "enforce",
 		WriteRoots: []string{root},
-	}, SessionDataGuard{}), []string{claim})
+	}, SessionDataGuard{}, nil), []string{claim})
 	if !ok {
 		t.Fatal("expected confined bash to be rebound")
 	}
@@ -388,7 +388,7 @@ func TestBashSandboxConfinement(t *testing.T) {
 	t.Cleanup(func() { os.RemoveAll(work) })
 	t.Chdir(work)
 	spec := sandbox.Spec{Mode: "enforce", WriteRoots: []string{work}, Network: true}
-	b := ConfineBash(spec, SessionDataGuard{})
+	b := ConfineBash(spec, SessionDataGuard{}, nil)
 
 	// Writing inside the root works; writing to a sibling under $HOME is denied
 	// by the sandbox the bash tool wrapped the command in.
