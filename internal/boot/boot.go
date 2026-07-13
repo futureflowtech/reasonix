@@ -120,6 +120,23 @@ type Options struct {
 	// SessionDir overrides where persisted chat transcripts are written. When
 	// empty, the shared CLI/global session directory is used.
 	SessionDir string
+	// Config, when non-nil, is used as-is instead of reading
+	// ./reasonix.toml / ~/.reasonix/config.toml from disk (config.LoadForRoot
+	// is skipped entirely, along with legacy-config migration). WorkspaceRoot
+	// above is still used for skills/hooks/memory/session file resolution —
+	// this field only replaces where the Config value itself comes from. The
+	// caller owns building a complete config (start from config.Default() and
+	// layer overrides on top, the same shape LoadForRoot produces) since some
+	// bookkeeping LoadForRoot performs (dotenv-derived expansion env, legacy
+	// migration, credential-store-mode detection) has no equivalent here.
+	Config *config.Config
+	// APIKeyOverride, when non-empty, pins the resolved model's API key to
+	// this value via ProviderEntry.SetAPIKeyOverride, bypassing every local
+	// credential source (env var, project/global .env, keyring) for this run
+	// only — no value is written to disk or to the process environment. For
+	// an embedder that already resolved its own credential (e.g. via its own
+	// config's env:NAME indirection) and wants to hand it through in memory.
+	APIKeyOverride string
 	// SharedHost is an optional plugin.Host shared across controllers for the
 	// same workspace root. When set, boot.Build reuses its running clients
 	// instead of creating new subprocesses, and the caller manages the host's
@@ -156,13 +173,25 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		stderr = os.Stderr
 	}
 	root := resolveWorkspaceRoot(opts.WorkspaceRoot)
-	// One-time import of v1/v0.5 legacy config — runs before Load so the freshly
-	// written config + ~/.env are picked up this same boot. CLI Run also calls this
-	// before config-only commands; this call stays as the shared frontend fallback.
-	migrated, migErr := config.MigrateLegacyIfNeededForRoot(root)
-	cfg, err := config.LoadForRoot(root)
-	if err != nil {
-		return nil, err
+	var (
+		cfg      *config.Config
+		migrated *config.MigrationResult
+		migErr   error
+		err      error
+	)
+	if opts.Config != nil {
+		// Caller supplied a fully-built config — skip disk entirely, including
+		// legacy-config migration (nothing on disk to migrate into memory).
+		cfg = opts.Config
+	} else {
+		// One-time import of v1/v0.5 legacy config — runs before Load so the freshly
+		// written config + ~/.env are picked up this same boot. CLI Run also calls this
+		// before config-only commands; this call stays as the shared frontend fallback.
+		migrated, migErr = config.MigrateLegacyIfNeededForRoot(root)
+		cfg, err = config.LoadForRoot(root)
+		if err != nil {
+			return nil, err
+		}
 	}
 	// Arm the credential-protection layers from the user-global [secrets]
 	// section before any tool, hook, or plugin subprocess can spawn. Package
@@ -189,6 +218,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	entry, ok := cfg.ResolveModel(modelName)
 	if !ok {
 		return nil, fmt.Errorf("%w %q (configured: %s); note: defining [[providers]] replaces the built-in presets, so add a [[providers]] entry for it or use a configured name, or run `reasonix setup` to reconfigure", ErrUnknownModel, modelName, providerNames(cfg))
+	}
+	if opts.APIKeyOverride != "" {
+		entry.SetAPIKeyOverride(opts.APIKeyOverride)
 	}
 	modelRef := entry.Name + "/" + entry.Model
 	if opts.EffortOverride != nil {

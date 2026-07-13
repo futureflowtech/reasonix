@@ -1,6 +1,11 @@
 // Package boot exposes the one-shot Build function from internal/boot so
 // external embedders can assemble a ready-to-drive Controller from configuration
-// without importing internal packages.
+// without importing internal packages. By default Build reads config from
+// ./reasonix.toml / ~/.reasonix/config.toml on disk, same as the CLI; an
+// embedder that wants to supply a config in memory instead (built from
+// pkg/config.Default() and its own overrides) sets Options.Config, and
+// Options.APIKeyOverride to hand through an already-resolved credential
+// without writing it to disk — see both fields' doc comments.
 package boot
 
 import (
