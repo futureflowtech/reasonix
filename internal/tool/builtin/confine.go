@@ -19,13 +19,16 @@ import (
 // the unconfined instance registered at init. When the spec enforces, bash runs
 // each command through the sandbox (see package sandbox). guard appends a
 // warning to command output when the command references Reasonix's own session
-// stores (see SessionDataGuard).
-func ConfineBash(spec sandbox.Spec, guard SessionDataGuard, timeout ...time.Duration) tool.Tool {
+// stores (see SessionDataGuard). remote, when non-nil, takes over entirely —
+// every command routes to it instead of local exec, and spec/the local OS
+// sandbox are never consulted (see sandbox.RemoteExecutor's own doc comment
+// for why). Pass nil for the normal local-exec behavior.
+func ConfineBash(spec sandbox.Spec, guard SessionDataGuard, remote sandbox.RemoteExecutor, timeout ...time.Duration) tool.Tool {
 	shell := spec.Shell
 	if shell.Path == "" {
 		shell = sandbox.ResolveShell("", "", nil)
 	}
-	b := bash{sb: spec, shell: shell, guard: guard}
+	b := bash{sb: spec, shell: shell, guard: guard, remote: remote}
 	if len(timeout) > 0 {
 		b.timeout = timeout[0]
 	}

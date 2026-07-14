@@ -94,6 +94,9 @@ type bash struct {
 	// enforcing — a host terminal cannot honor the confinement configuration —
 	// and never for background jobs, which need the local job manager.
 	terminal TerminalRunner
+	// remote, when non-nil, takes over Execute entirely — see
+	// sandbox.RemoteExecutor's own doc comment and executeRemote below.
+	remote sandbox.RemoteExecutor
 }
 
 type bashParams struct {
@@ -165,6 +168,10 @@ func (b bash) Execute(ctx context.Context, args json.RawMessage) (string, error)
 	}
 	if p.Command == "" {
 		return "", fmt.Errorf("command is required")
+	}
+
+	if b.remote != nil {
+		return b.executeRemote(ctx, p)
 	}
 
 	sh := b.resolved()
@@ -250,6 +257,39 @@ func (b bash) Execute(ctx context.Context, args json.RawMessage) (string, error)
 		out, err = b.runForeground(ctx, p, sh, unconfinedShellArgv(sh, p.Command), false, cmdEnv)
 	}
 	return appendSessionDataHint(out, b.guard.CommandHint(b.workDir, p.Command)), err
+}
+
+// executeRemote runs p.Command through b.remote instead of local exec — the
+// whole point of a RemoteExecutor (a real, separate kernel, e.g. a Kata
+// Containers VM) is that none of the local machinery below applies: no OS
+// sandbox wrapping (the VM boundary is the isolation), no host-terminal
+// echo (there is no host terminal to echo to), no background-job support
+// (jobs.Manager tracks local process groups, which don't exist here — a
+// caller that needs long-running background work in a remote sandbox needs
+// a different mechanism, not this one; refusing clearly beats silently
+// running foreground-only and calling it done).
+func (b bash) executeRemote(ctx context.Context, p bashParams) (string, error) {
+	if p.RunInBackground {
+		return "", fmt.Errorf("run_in_background is not supported when bash is routed to a remote sandbox")
+	}
+	sh := b.resolved()
+	argv := unconfinedShellArgv(sh, p.Command)
+	stdout, stderr, exitCode, err := b.remote.Exec(ctx, argv[0], argv[1:], b.workDir)
+	out := stdout
+	if stderr != "" {
+		if out != "" {
+			out += "\n"
+		}
+		out += stderr
+	}
+	hint := b.guard.CommandHint(b.workDir, p.Command)
+	if err != nil {
+		return appendSessionDataHint(out, hint), fmt.Errorf("remote sandbox exec: %w", err)
+	}
+	if exitCode != 0 {
+		return appendSessionDataHint(out, hint), fmt.Errorf("command exited with code %d", exitCode)
+	}
+	return appendSessionDataHint(out, hint), nil
 }
 
 // appendSessionDataHint appends the session-data guard warning to command
